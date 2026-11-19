@@ -16,22 +16,45 @@ datasource db {
 // la ruta que corresponda.
 //   Role:             "ADMIN" | "DIRECTOR" | "READER"
 //   MembershipStatus: "PENDING" | "APPROVED" | "REJECTED"
+//   LocationType:     "google_meet" | "phone" | "in_person" | "custom" | "none"
+//   BookingStatus:    "CONFIRMED" | "CANCELED"
+//   EventKind:        "one_on_one" | "group" | "one_off"
+//   QuestionType:     "text" | "textarea" | "phone" | "radio" | "checkbox" | "select"
+//
+// Prisma 5 + SQLite no soporta columnas Json: los campos *Json son strings con
+// JSON adentro y se parsean en lib/serialize.js. Nunca leerlos crudos.
 //
 // Ojo con ordenar por estas columnas: el orden es alfabético, no semántico.
-// Si necesitás precedencia real, mapeá el valor a un rank y ordená por eso.
 
 model User {
-  id           Int      @id @default(autoincrement())
-  googleId     String   @unique
-  email        String   @unique
-  name         String
-  avatarUrl    String?
+  id             Int      @id @default(autoincrement())
+  googleId       String   @unique
+  email          String   @unique
+  name           String
+  avatarUrl      String?
   // Se setea desde ADMIN_EMAILS en cada login. Es lo único global: habilita
   // crear empresas. Para operar dentro de una igual hace falta Membership.
-  isSuperAdmin Boolean  @default(false)
-  createdAt    DateTime @default(now())
+  isSuperAdmin   Boolean  @default(false)
+  // Slug público: /u/<username>. Se genera del email en el primer login y el
+  // usuario lo puede cambiar desde Perfil. Es global (no por empresa) porque
+  // la URL pública no lleva empresa.
+  username       String?  @unique
+  // Zona horaria de la persona; es la default al crear un horario nuevo.
+  timezone       String   @default("America/Argentina/Buenos_Aires")
+  welcomeMessage String?
+  // Topes de reuniones entre TODOS los tipos de evento (Calendly: "Meeting
+  // limits" en Advanced availability). null = sin tope. Se cuentan eventos,
+  // no invitados: un grupal con 5 personas es una reunión.
+  limitDay       Int?
+  limitWeek      Int?
+  limitMonth     Int?
+  createdAt      DateTime @default(now())
 
-  memberships Membership[]
+  memberships      Membership[]
+  googleConnection GoogleConnection?
+  schedules        Schedule[]
+  eventTypes       EventType[]
+  bookings         Booking[]
 }
 
 model Company {
@@ -40,7 +63,9 @@ model Company {
   createdAt DateTime @default(now())
 
   memberships Membership[]
-  items       Item[]
+  schedules   Schedule[]
+  eventTypes  EventType[]
+  bookings    Booking[]
 }
 
 // El rol y el estado de aprobación son POR EMPRESA, no globales: la misma
@@ -59,13 +84,178 @@ model Membership {
   @@unique([userId, companyId])
 }
 
-// Ejemplo de entidad de negocio: TODO dato propio cuelga de una Company y toda
-// consulta filtra por companyId. Borralo cuando tengas los modelos reales.
-model Item {
-  id        Int      @id @default(autoincrement())
-  title     String
-  notes     String?
-  companyId Int
-  company   Company  @relation(fields: [companyId], references: [id])
-  createdAt DateTime @default(now())
+// Conexión OAuth con Google Calendar (distinta del login: el login sólo pide
+// email/perfil vía ID token; esto pide scopes de calendario con refresh token).
+// Es personal, no por empresa: el calendario de una persona es uno solo.
+model GoogleConnection {
+  id                      Int       @id @default(autoincrement())
+  userId                  Int       @unique
+  user                    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  googleEmail             String
+  // Cifrados con AES-256-GCM (lib/crypto.js), clave derivada de JWT_SECRET.
+  refreshTokenEnc         String
+  accessTokenEnc          String?
+  expiryDate              DateTime?
+  // Calendarios que bloquean horarios (freebusy). JSON: string[]
+  conflictCalendarIdsJson String    @default("[\"primary\"]")
+  // Calendario donde se crea el evento al reservar.
+  targetCalendarId        String    @default("primary")
+  // Crea eventos "Margen" antes/después de cada reunión en Google.
+  includeBuffers          Boolean   @default(false)
+  // Si el host mueve o borra el evento en Google, la reserva se actualiza
+  // (lib/jobs.js, cada 5 minutos). lastSyncAt = hasta dónde se leyó.
+  syncFromGoogle          Boolean   @default(true)
+  lastSyncAt              DateTime?
+  lastError               String?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+}
+
+// Horario de disponibilidad reutilizable ("Horario laboral", "Fines de semana").
+// weeklyJson:    { "0": [["09:00","17:00"]], ..., "6": [] }  0 = domingo
+// overridesJson: [{ "date": "2026-12-24", "intervals": [] }]  [] = no disponible
+// Las horas son de pared en `timezone`, no UTC.
+model Schedule {
+  id            Int      @id @default(autoincrement())
+  companyId     Int
+  company       Company  @relation(fields: [companyId], references: [id])
+  userId        Int
+  user          User     @relation(fields: [userId], references: [id])
+  name          String
+  timezone      String
+  weeklyJson    String
+  overridesJson String   @default("[]")
+  isDefault     Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  eventTypes EventType[]
+}
+
+model EventType {
+  id         Int       @id @default(autoincrement())
+  companyId  Int
+  company    Company   @relation(fields: [companyId], references: [id])
+  userId     Int
+  user       User      @relation(fields: [userId], references: [id])
+  // null = usa el horario default del host.
+  scheduleId Int?
+  schedule   Schedule? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+
+  // one_on_one: 1 invitado por turno. group: hasta `seats` invitados en el
+  // mismo turno (un solo evento de Google con todos). one_off: sólo ofrece
+  // los horarios de oneOffSlotsJson, ignora el horario semanal y se desactiva
+  // con la primera reserva.
+  kind            String  @default("one_on_one")
+  seats           Int?
+  oneOffSlotsJson String  @default("[]")
+  // Oculto de /u/<username>, pero accesible por su link directo.
+  isSecret        Boolean @default(false)
+
+  title           String
+  slug            String
+  description     String?
+  color           String  @default("#2563eb")
+  durationMinutes Int     @default(30)
+  locationType    String  @default("google_meet")
+  locationValue   String?
+
+  // Reglas de agenda (todas en minutos salvo maxDaysAhead).
+  bufferBefore     Int  @default(0)
+  bufferAfter      Int  @default(0)
+  minNoticeMinutes Int  @default(240)
+  maxDaysAhead     Int  @default(60)
+  // Cada cuánto arranca un turno. null = igual a la duración.
+  slotInterval     Int?
+  // Máximo de reuniones de este tipo por día / semana / mes (en la zona del
+  // horario). null = sin límite.
+  dailyLimit       Int?
+  weeklyLimit      Int?
+  monthlyLimit     Int?
+
+  // Página de reserva.
+  lockTimezone  Boolean @default(false)
+  allowGuests   Boolean @default(true)
+  // Preguntas extra. JSON: [{ id, label, type, required, enabled, options, allowOther }]
+  questionsJson String  @default("[]")
+
+  // Después de reservar: redirigir a una URL externa (sólo http/https) o
+  // mostrar la confirmación con links propios. JSON: [{ label, url }]
+  redirectUrl           String?
+  confirmationLinksJson String  @default("[]")
+
+  // Recordatorios: minutos antes del inicio. JSON: number[]
+  remindersJson   String   @default("[]")
+  // Mail de seguimiento N minutos después del fin. null = apagado.
+  followUpMinutes Int?
+  followUpMessage String?
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+
+  bookings       Booking[]
+  singleUseLinks SingleUseLink[]
+
+  // La URL pública es /u/<username>/<slug>, así que el slug es único por host.
+  @@unique([userId, slug])
+}
+
+model Booking {
+  id          Int       @id @default(autoincrement())
+  // Token público e inadivinable: es la "llave" del invitado para ver,
+  // cancelar o reprogramar sin tener cuenta (/reserva/<uid>).
+  uid         String    @unique
+  companyId   Int
+  company     Company   @relation(fields: [companyId], references: [id])
+  eventTypeId Int
+  eventType   EventType @relation(fields: [eventTypeId], references: [id])
+  hostId      Int
+  host        User      @relation(fields: [hostId], references: [id])
+
+  startTime       DateTime
+  endTime         DateTime
+  inviteeName     String
+  inviteeEmail    String
+  inviteeTimezone String
+  // Invitados adicionales. JSON: string[] (emails)
+  guestsJson      String   @default("[]")
+  // JSON: { [questionId]: string }
+  answersJson     String   @default("{}")
+  notes           String?
+  location        String?
+
+  status          String    @default("CONFIRMED")
+  cancelReason    String?
+  canceledBy      String?
+  canceledAt      DateTime?
+  rescheduleCount Int       @default(0)
+
+  // Calendario donde quedó el evento: si el host cambia el calendario destino
+  // después, las reservas viejas se siguen moviendo/borrando donde están.
+  googleCalendarId    String?
+  // En un grupal TODAS las reservas del turno comparten el mismo evento.
+  googleEventId       String?
+  // Eventos "Margen" creados con includeBuffers. JSON: string[]
+  googleBufferIdsJson String  @default("[]")
+  meetLink            String?
+
+  // Recordatorios ya enviados (minutos). JSON: number[]
+  remindersSentJson String         @default("[]")
+  followUpSentAt    DateTime?
+  singleUseLink     SingleUseLink?
+  createdAt         DateTime       @default(now())
+
+  @@index([hostId, startTime])
+}
+
+// Link de un solo uso (Calendly: "Single-use links"): sirve para reservar UNA
+// vez un tipo de evento, aunque esté oculto. Se consume dentro del mismo
+// candado que crea la reserva (lib/bookings.js).
+model SingleUseLink {
+  id          Int       @id @default(autoincrement())
+  token       String    @unique
+  eventTypeId Int
+  eventType   EventType @relation(fields: [eventTypeId], references: [id], onDelete: Cascade)
+  bookingId   Int?      @unique
+  booking     Booking?  @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  usedAt      DateTime?
+  createdAt   DateTime  @default(now())
 }

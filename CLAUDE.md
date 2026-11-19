@@ -4,11 +4,15 @@ Guía para Claude Code (claude.ai/code) al trabajar en este repo.
 
 ## Qué es esto
 
-Book a Meeting. Dashboard multi-empresa con login por Google. El rol y el estado
-de aprobación de un usuario son **por empresa** (ver `Membership`): una cuenta
-nueva elige a qué empresa pedir acceso y queda `PENDING` ahí hasta que un admin
-de esa empresa la aprueba. Los emails de `ADMIN_EMAILS` son superadmin desde el
-primer login: pueden crear empresas y nunca quedan esperando aprobación.
+Book a Meeting: plataforma open source de agendamiento tipo Calendly (tipos de
+evento, disponibilidad semanal + excepciones, Google Calendar para bloquear
+horarios y crear el evento, página pública de reserva, reprogramar/cancelar).
+El dominio está explicado en la sección **Agenda** más abajo.
+
+El panel personal usa login por Google. Al primer ingreso se crea un espacio
+propio con membresía ADMIN/APPROVED. Los equipos anteriores siguen usando
+`Membership` para el alcance y los permisos. `ALLOWED_EMAILS` restringe quién
+puede entrar y `ADMIN_EMAILS` identifica a los superadmins.
 
 Dos servicios, sin monorepo — cada uno con su `package.json`, instalados y
 corridos por separado:
@@ -58,8 +62,7 @@ npm run dev       # vite, http://localhost:5173
 npm run build
 ```
 
-No hay lint ni tests configurados — no asumir que existen `npm test` /
-`npm run lint`.
+En `server/`, `npm test` prueba las rutas públicas con una base SQLite temporal.
 
 Docker (desde la raíz):
 ```bash
@@ -124,9 +127,12 @@ de la instancia esperando una aprobación que nadie puede dar. Sólo se asciende
 `Membership` → el cliente guarda el token en `localStorage` y manda
 `Authorization: Bearer <token>` en cada request.
 
-`App.jsx` gatea el routing en este orden: sin login → `Login`; logueado pero sin
-`activeMembership` o con `status !== APPROVED` → `AccountStatus`; si no →
-`Dashboard`/`Admin` dentro de `Layout`. **Ese gate es UI, no seguridad**: todo
+`App.jsx` resuelve primero las rutas públicas (`/u/:username`,
+`/u/:username/:slug`, `/reserva/:uid`, en `client/src/public/`), que no pasan
+por ningún gate. Todo lo demás va a `PrivateApp`, que gatea en este orden: sin
+login → `Login`; logueado pero sin `activeMembership` o con
+`status !== APPROVED` → `AccountStatus`; si no → las páginas del panel dentro
+de `Layout`. **Ese gate es UI, no seguridad**: todo
 lo que esconde tiene que estar cerrado también del lado del server con la
 cadena `requireAuth` / `requireCompany` / `requireApproved` / `requireAdmin` /
 `requireWriter` / `requireSuperAdmin`.
@@ -179,10 +185,68 @@ arrancar el contenedor. Conservar las dos cosas.
 **Persistencia**: la base y los uploads van adentro de `/app/data`, mapeado al
 volumen `bookameeting_data`. Lo que quede afuera se pierde en cada rebuild.
 
-**Zona horaria**: `TZ` es una sola para toda la instancia. Si alguna vez hay que
-agendar algo a una hora de pared ("a las 9:00") para empresas en husos
-distintos, `TZ` no alcanza: hay que guardar un offset por empresa y calcular
-con él, sin usar `getHours()`/`setDate()`, que leen la TZ del proceso.
+**Zona horaria**: `TZ` del contenedor sólo afecta los logs. La agenda **nunca**
+usa la zona del proceso: cada `Schedule` guarda su `timezone` IANA, el
+invitado manda la suya, y todo se calcula con **luxon** con zona explícita
+(server `lib/availability.js`, cliente `src/lib/time.js`). Prohibido
+`getHours()`/`setDate()`/`toLocaleString()` sin zona en código de agenda.
+
+**`docker-compose.yml`**: `CLOUDFLARE_TUNNEL_TOKEN` va con `:-` y no `:?`.
+Compose interpola todos los servicios aunque su profile no esté activo, así que
+un `:?` rompe `docker compose up` a quien no usa el túnel.
+
+## Agenda (dominio)
+
+Modelos (`schema.prisma`): `Schedule` (horario semanal + excepciones),
+`EventType` (lo que se reserva), `Booking`, `GoogleConnection`. Los campos
+`*Json` son strings porque Prisma 5 + SQLite no tiene columnas Json: se leen
+**sólo** vía `lib/serialize.js`.
+
+Alcance: `Schedule`, `EventType` y `Booking` llevan `companyId` y además
+`userId`/`hostId`. Las rutas del panel filtran por **los dos** (cada persona
+administra lo suyo; un ADMIN puede listar reservas de todo el equipo con
+`?all=1`). `User.username`, `timezone` y `GoogleConnection` son **globales**:
+la URL pública (`/u/<username>/<slug>`) no lleva empresa y el calendario de una
+persona es uno solo. Por eso el cálculo de ocupado mira las reservas del host
+**en todas las empresas**.
+
+**Rutas públicas** (`routes/public.js`, sin auth, con rate limit): son la única
+excepción a "toda consulta filtra por `req.company.id`". La credencial del
+invitado es `Booking.uid` (16 bytes al azar). Nunca devolver ahí el email del
+host, reglas internas ni otras reservas. `app.set('trust proxy', ...)` en
+`index.js` confía sólo en redes privadas (nginx/cloudflared en Compose); sin
+eso el rate limit vería una sola IP para todo internet.
+
+**Turnos** (`lib/availability.js`): horario (u excepción del día) → aviso
+mínimo / ventana máxima → menos reservas confirmadas del host (con SUS buffers)
+y menos freebusy de Google → el turno candidato, con SUS buffers, no puede
+solapar nada → límite diario por tipo → agrupado por fecha en la zona del
+invitado. Al reservar o reprogramar el server **revalida** el horario con
+`isSlotAvailable`; nunca confiar en que el cliente mandó un turno ofrecido.
+
+**Doble reserva**: `lib/bookings.js` serializa "chequear + guardar" con un
+candado **en memoria** por host. Vale porque el stack corre una sola instancia
+del server; con réplicas habría que moverlo a la base.
+
+**Google Calendar** (`lib/google.js`, `routes/google.js`) es un flujo OAuth
+**aparte** del login: el login es Google Identity Services (ID token, sin
+scopes); Calendar usa authorization code con `access_type=offline` +
+`prompt=consent` para obtener refresh token, y necesita
+`GOOGLE_CLIENT_SECRET` y la redirect URI `CLIENT_ORIGIN/api/google/callback`
+registrada en el Client ID (en dev la proxea Vite). El `state` es un JWT firmado
+con el userId porque el callback llega sin header de Authorization. Los tokens
+se guardan cifrados (AES-GCM) con clave derivada de `JWT_SECRET`: **rotar
+`JWT_SECRET` obliga a todos a reconectar Calendar**.
+
+Fallas de Google: freebusy falla **abierto** (se ofrecen turnos descontando
+sólo las reservas propias) y crear/mover/borrar el evento nunca deshace la
+reserva; el error queda en `GoogleConnection.lastError`, que se muestra en
+Integraciones. Mails (`lib/mailer.js`, opcional por SMTP) igual: nunca tiran.
+Si la reserva tiene evento en Google no se adjunta `.ics` al invitado (Google
+ya le manda la invitación y quedaría duplicada).
+
+Borrar un `EventType` con reservas lo **desactiva** en vez de borrarlo, para no
+perder historial.
 
 ## Interfaz
 

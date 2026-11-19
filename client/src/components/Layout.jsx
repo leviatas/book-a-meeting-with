@@ -26,11 +26,17 @@ export default function Layout() {
         </div>
 
         <nav className="tabs">
-          <NavLink to="/">Inicio</NavLink>
-          {activeMembership.role === 'ADMIN' && <NavLink to="/admin">Administración</NavLink>}
+          <NavLink to="/" end>
+            Eventos
+          </NavLink>
+          <NavLink to="/reservas">Reservas</NavLink>
+          <NavLink to="/disponibilidad">Disponibilidad</NavLink>
+          <NavLink to="/integraciones">Integraciones</NavLink>
+          <NavLink to="/perfil">Perfil</NavLink>
         </nav>
 
         <div className="user-box">
+          {user.avatarUrl && <img className="avatar avatar-sm" src={user.avatarUrl} alt="" referrerPolicy="no-referrer" />}
           <span className="muted">{user.name}</span>
           <button type="button" className="link-button" onClick={logout}>
             Salir

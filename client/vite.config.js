@@ -17,5 +17,9 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // En dev el callback OAuth de Google Calendar vuelve a
+    // http://localhost:5173/api/google/callback (CLIENT_ORIGIN + /api/...):
+    // Vite lo pasa al server igual que nginx en Docker.
+    proxy: { '/api': 'http://localhost:4000' },
   },
 });

@@ -14,6 +14,7 @@ async function requireAuth(req, res, next) {
 
   try {
     const payload = jwt.verify(token, JWT_SECRET);
+    if (payload.purpose) return res.status(401).json({ error: 'Se requiere una sesión de usuario' });
     const user = await prisma.user.findUnique({ where: { id: payload.userId } });
     if (!user) return res.status(401).json({ error: 'Usuario no encontrado' });
     req.user = user;

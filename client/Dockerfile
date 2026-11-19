@@ -25,5 +25,8 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
 
+# 127.0.0.1 y no localhost: en Alpine localhost resuelve primero a ::1 y nginx
+# escucha sólo IPv4 (listen 80), así que el chequeo fallaba con "connection
+# refused" y el contenedor quedaba unhealthy aunque sirviera bien.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD wget -qO- http://localhost:80 || exit 1
+  CMD wget -qO- http://127.0.0.1:80 || exit 1

@@ -116,6 +116,7 @@ export function AuthProvider({ children }) {
       value={{
         token,
         user,
+        setUser,
         memberships,
         activeMembership,
         companyId,

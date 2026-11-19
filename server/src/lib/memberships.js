@@ -42,4 +42,22 @@ async function ensureSuperAdminMemberships(user) {
   });
 }
 
-module.exports = { loadMembershipsForUser, ensureSuperAdminMemberships };
+// Como en Calendly: entrar con Google ya te da tu página de reservas. Toda
+// persona sin ninguna membresía recibe un espacio personal propio (una
+// Company con ella sola, ADMIN/APPROVED), así nunca pasa por "elegir empresa"
+// ni "esperar aprobación". Company/Membership siguen existiendo por dentro
+// para poder sumar equipos más adelante sin rehacer el modelo.
+async function ensurePersonalWorkspace(user) {
+  const count = await prisma.membership.count({ where: { userId: user.id } });
+  if (count > 0) return;
+  await prisma.$transaction(async (tx) => {
+    // El login y /auth/me pueden coincidir en dos pestañas.
+    if (await tx.membership.count({ where: { userId: user.id } })) return;
+    const company = await tx.company.create({ data: { name: user.name } });
+    await tx.membership.create({
+      data: { userId: user.id, companyId: company.id, role: 'ADMIN', status: 'APPROVED' },
+    });
+  });
+}
+
+module.exports = { loadMembershipsForUser, ensureSuperAdminMemberships, ensurePersonalWorkspace };

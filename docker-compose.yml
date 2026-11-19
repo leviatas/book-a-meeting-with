@@ -4,13 +4,27 @@ services:
     environment:
       DATABASE_URL: file:/app/data/prod.db
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?Set GOOGLE_CLIENT_ID in .env}
+      # Sin el secret la app anda igual, pero sin la integración con Google
+      # Calendar (no hay forma de canjear el code OAuth por un refresh token).
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+      # Ojo: los refresh tokens de Google se cifran con una clave derivada de
+      # este secret. Rotarlo obliga a cada persona a reconectar Calendar.
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      # Mails de confirmación/cancelación. Opcional: vacío = no se manda nada.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
       ADMIN_EMAILS: ${ADMIN_EMAILS:-leviatas@gmail.com}
-      CLIENT_ORIGIN: ${CLIENT_ORIGIN:-http://localhost:8080}
+      # Vacío = registro abierto (cualquiera con Google). Ver .env.example.
+      ALLOWED_EMAILS: ${ALLOWED_EMAILS:-}
+      CLIENT_ORIGIN: ${CLIENT_ORIGIN:-http://localhost:${CLIENT_PORT:-8080}}
       PORT: 4000
-      # Zona horaria del proceso. Si alguna vez agendás algo a una hora de
-      # pared para clientes en husos distintos, esto no alcanza: es una sola
-      # para toda la instancia. Ahí hay que guardar un offset por empresa.
+      # Zona horaria del proceso (logs). La agenda NO depende de esto: cada
+      # horario guarda su propia zona y todo se calcula con luxon.
       TZ: ${TZ:-America/Argentina/Buenos_Aires}
     volumes:
       # Todo lo que tenga que sobrevivir a un rebuild va acá adentro: la base
@@ -37,7 +51,10 @@ services:
     image: cloudflare/cloudflared:latest
     command: tunnel --no-autoupdate run
     environment:
-      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN in .env}
+      # `:-` y no `:?`: Compose interpola TODOS los servicios aunque su profile
+      # no esté activo, así que un `:?` acá rompe `docker compose up` para
+      # quien no usa el túnel. Si falta, el que se queja es cloudflared.
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
     depends_on:
       - client
     restart: unless-stopped
