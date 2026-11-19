@@ -1,0 +1,71 @@
+generator client {
+  provider      = "prisma-client-js"
+  // "native" cubre el dev local (Windows/macOS/Debian); el target musl es
+  // obligatorio para la imagen node:20-alpine del Dockerfile.
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// SQLite no tiene enums: estos campos son strings y los valores válidos se
+// validan en la capa de aplicación (middleware/auth.js y routes/*.js), no en
+// el schema. Al agregar un valor nuevo, actualizar el array de validación de
+// la ruta que corresponda.
+//   Role:             "ADMIN" | "DIRECTOR" | "READER"
+//   MembershipStatus: "PENDING" | "APPROVED" | "REJECTED"
+//
+// Ojo con ordenar por estas columnas: el orden es alfabético, no semántico.
+// Si necesitás precedencia real, mapeá el valor a un rank y ordená por eso.
+
+model User {
+  id           Int      @id @default(autoincrement())
+  googleId     String   @unique
+  email        String   @unique
+  name         String
+  avatarUrl    String?
+  // Se setea desde ADMIN_EMAILS en cada login. Es lo único global: habilita
+  // crear empresas. Para operar dentro de una igual hace falta Membership.
+  isSuperAdmin Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  memberships Membership[]
+}
+
+model Company {
+  id        Int      @id @default(autoincrement())
+  name      String
+  createdAt DateTime @default(now())
+
+  memberships Membership[]
+  items       Item[]
+}
+
+// El rol y el estado de aprobación son POR EMPRESA, no globales: la misma
+// persona puede ser ADMIN aprobado en una y no tener relación con otra.
+model Membership {
+  id        Int     @id @default(autoincrement())
+  userId    Int
+  user      User    @relation(fields: [userId], references: [id])
+  companyId Int
+  company   Company @relation(fields: [companyId], references: [id])
+
+  role      String   @default("DIRECTOR")
+  status    String   @default("PENDING")
+  createdAt DateTime @default(now())
+
+  @@unique([userId, companyId])
+}
+
+// Ejemplo de entidad de negocio: TODO dato propio cuelga de una Company y toda
+// consulta filtra por companyId. Borralo cuando tengas los modelos reales.
+model Item {
+  id        Int      @id @default(autoincrement())
+  title     String
+  notes     String?
+  companyId Int
+  company   Company  @relation(fields: [companyId], references: [id])
+  createdAt DateTime @default(now())
+}
