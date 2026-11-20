@@ -9,6 +9,12 @@
 
 Para compartir con otras personas por internet, usá el dominio público de tu instalación. La configuración con Cloudflare Tunnel está en el [README](../README.md#2a-publicarlo-con-cloudflare-tunnel).
 
+## Bloqueá los feriados argentinos
+
+En **Disponibilidad**, elegí el horario que querés modificar y abrí **Buscar feriados argentinos** en **Excepciones por fecha**. Elegí el año y buscá por nombre o fecha. Marcá los días que te interesan, hacé clic en **Bloquear fechas** y después en **Guardar horario**. Así se cierran esos días completos para las nuevas reservas y reprogramaciones de ese horario, en su zona horaria.
+
+Para llevar las fechas a otro calendario, usá **Exportar .ics**. El archivo contiene los feriados seleccionados como eventos de día completo que figuran como ocupados. Los datos provienen de [ArgentinaDatos](https://argentinadatos.com).
+
 ## Elegí cómo se reserva
 
 | Si querés ofrecer… | Elegí |

@@ -87,6 +87,7 @@ export const api = {
 
   schedules: {
     list: (token) => request('/schedules', { token }),
+    argentinaHolidays: (token, year) => request(`/schedules/holidays/argentina/${year}`, { token }),
     create: (token, data) => request('/schedules', { method: 'POST', body: data, token }),
     update: (token, id, data) => request(`/schedules/${id}`, { method: 'PUT', body: data, token }),
     makeDefault: (token, id) => request(`/schedules/${id}/default`, { method: 'POST', token }),

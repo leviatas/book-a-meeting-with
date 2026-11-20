@@ -612,6 +612,20 @@ a.button:hover { border-color: var(--primary); }
   gap: 1rem;
 }
 
+.holiday-picker { margin-top: 0.75rem; }
+.holiday-year { max-width: 8rem; margin-top: 1rem; }
+.holiday-results {
+  list-style: none;
+  margin: 0.5rem 0;
+  padding: 0;
+  max-height: 19rem;
+  overflow-y: auto;
+}
+.holiday-results li { border-bottom: 1px solid var(--border); }
+.holiday-results .check { display: flex; padding: 0.5rem 0.2rem; margin: 0; }
+.holiday-date { display: block; }
+.holiday-actions { flex-wrap: wrap; }
+
 .day-row {
   display: grid;
   grid-template-columns: 8rem minmax(0, 1fr) auto;

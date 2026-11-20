@@ -129,9 +129,21 @@ function candidateStarts(eventType, schedule, hostZone, windowStart, windowEnd) 
   const duration = eventType.durationMinutes;
 
   if (eventType.kind === 'one_off') {
+    // Las propuestas manuales pueden quedar fuera del horario semanal y cruzar
+    // medianoche. Un feriado bloquea el día civil completo en la zona del horario.
+    const holidays = (schedule?.overrides || [])
+      .filter((override) => override.holidayName && override.intervals.length === 0)
+      .map(({ date }) => {
+        const start = DateTime.fromISO(date, { zone: hostZone });
+        return { start, end: start.plus({ days: 1 }).startOf('day') };
+      });
     return parseJson(eventType.oneOffSlotsJson, [])
       .map((iso) => DateTime.fromISO(iso, { zone: 'utc' }))
-      .filter((t) => t.isValid)
+      .filter((start) => {
+        if (!start.isValid) return false;
+        const end = start.plus({ minutes: duration });
+        return !holidays.some((holiday) => overlaps(start, end, holiday.start, holiday.end));
+      })
       .sort((a, b) => a - b);
   }
 

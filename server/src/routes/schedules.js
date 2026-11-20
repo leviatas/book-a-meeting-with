@@ -1,9 +1,11 @@
 const express = require('express');
+const { DateTime } = require('luxon');
 const prisma = require('../lib/prisma');
 const { requireAuth, requireCompany, requireApproved, requireWriter } = require('../middleware/auth');
 const { serializeSchedule, DEFAULT_WEEKLY } = require('../lib/serialize');
 const { ensureDefaultSchedule } = require('../lib/users');
 const { isValidZone } = require('../lib/availability');
+const { getArgentinaHolidays } = require('../lib/argentinaHolidays');
 
 const router = express.Router();
 
@@ -50,12 +52,18 @@ function parseBody(body, partial) {
   }
   if (body.overrides !== undefined) {
     if (!Array.isArray(body.overrides)) throw new Error('Excepciones inválidas');
+    if (body.overrides.length > 500) throw new Error('El horario admite hasta 500 excepciones');
     const seen = new Set();
-    const overrides = body.overrides.slice(0, 500).map((o) => {
+    const overrides = body.overrides.map((o) => {
       if (!DATE.test(o.date)) throw new Error('Fecha de excepción inválida');
       if (seen.has(o.date)) throw new Error(`La fecha ${o.date} está repetida`);
       seen.add(o.date);
-      return { date: o.date, intervals: parseIntervals(o.intervals || [], o.date) };
+      const intervals = parseIntervals(o.intervals || [], o.date);
+      const override = { date: o.date, intervals };
+      if (!intervals.length && typeof o.holidayName === 'string' && o.holidayName.trim()) {
+        override.holidayName = o.holidayName.trim().slice(0, 200);
+      }
+      return override;
     });
     overrides.sort((a, b) => a.date.localeCompare(b.date));
     data.overridesJson = JSON.stringify(overrides);
@@ -74,6 +82,23 @@ router.get('/', async (req, res) => {
     orderBy: [{ isDefault: 'desc' }, { id: 'asc' }],
   });
   res.json({ schedules: rows.map(serializeSchedule) });
+});
+
+router.get('/holidays/argentina/:year', async (req, res) => {
+  const year = Number(req.params.year);
+  const maxYear = DateTime.now().setZone('America/Argentina/Buenos_Aires').year + 1;
+  if (!/^\d{4}$/.test(req.params.year) || year < 2016 || year > maxYear) {
+    return res.status(400).json({ error: `Elegí un año entre 2016 y ${maxYear}.` });
+  }
+  try {
+    const holidays = await getArgentinaHolidays(year);
+    if (!holidays.length) {
+      return res.status(404).json({ error: `ArgentinaDatos todavía no tiene feriados publicados para ${year}.` });
+    }
+    res.json({ holidays });
+  } catch {
+    res.status(502).json({ error: 'No se pudieron consultar los feriados en ArgentinaDatos. Volvé a intentar.' });
+  }
 });
 
 router.post('/', requireWriter, async (req, res, next) => {

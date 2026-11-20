@@ -4,6 +4,8 @@ import { api } from '../api';
 import { useAuth } from '../context/AuthContext';
 import { useConfirm } from '../components/ConfirmDialog';
 import TimezoneSelect from '../components/TimezoneSelect';
+import ArgentinaHolidays from '../components/ArgentinaHolidays';
+import { downloadHolidayCalendar } from '../lib/holidayCalendar';
 import { LOCALE, capitalize } from '../lib/time';
 
 const DAYS = [
@@ -176,7 +178,11 @@ function OverrideModal({ initial, onSave, onClose }) {
             type="button"
             className="btn-primary"
             disabled={!date}
-            onClick={() => onSave({ date, intervals: unavailable ? [] : intervals })}
+            onClick={() => onSave({
+              date,
+              intervals: unavailable ? [] : intervals,
+              ...(unavailable && initial?.holidayName ? { holidayName: initial.holidayName } : {}),
+            })}
           >
             Aplicar
           </button>
@@ -197,6 +203,8 @@ function ScheduleEditor() {
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
   const [overrideModal, setOverrideModal] = useState(null);
+  const [holidaysAdded, setHolidaysAdded] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const load = useCallback(
     (keepId) =>
@@ -208,6 +216,7 @@ function ScheduleEditor() {
           setSelectedId(pick?.id ?? null);
           setDraft(pick ? structuredClone(pick) : null);
           setDirty(false);
+          setHolidaysAdded(false);
         })
         .catch((err) => setError(err.message)),
     [token]
@@ -221,6 +230,7 @@ function ScheduleEditor() {
     setDraft((d) => ({ ...d, ...patch }));
     setDirty(true);
     setSaved(false);
+    setHolidaysAdded(false);
   }
 
   function setDay(day, intervals) {
@@ -236,21 +246,31 @@ function ScheduleEditor() {
     setSelectedId(s.id);
     setDraft(structuredClone(s));
     setDirty(false);
+    setSaved(false);
+    setHolidaysAdded(false);
+    setError('');
   }
 
   async function save() {
+    if (saving) return;
+    setSaving(true);
     setError('');
     try {
-      await api.schedules.update(token, draft.id, {
+      const { schedule } = await api.schedules.update(token, draft.id, {
         name: draft.name,
         timezone: draft.timezone,
         weekly: draft.weekly,
         overrides: draft.overrides,
       });
-      await load(draft.id);
+      setSchedules((list) => list.map((s) => s.id === schedule.id ? schedule : s));
+      setDraft(structuredClone(schedule));
+      setDirty(false);
+      setHolidaysAdded(false);
       setSaved(true);
     } catch (err) {
       setError(err.message);
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -292,7 +312,32 @@ function ScheduleEditor() {
     setOverrideModal(null);
   }
 
-  const today = DateTime.now().toISODate();
+  async function applyHolidays(holidays) {
+    const byDate = new Map(draft.overrides.map((o) => [o.date, o]));
+    const conflicts = holidays.filter(({ date }) => byDate.get(date)?.intervals.length);
+    if (conflicts.length > 0) {
+      const dates = conflicts.map(({ date }) => DateTime.fromISO(date, { zone: draft.timezone }).toFormat('dd/MM/yyyy'));
+      const ok = await confirm({
+        title: 'Reemplazar horarios especiales',
+        message: `Ya configuraste horas disponibles para ${dates.join(', ')}. Al aplicar los feriados, esos días quedarán bloqueados por completo.`,
+        confirmLabel: 'Reemplazar horarios',
+      });
+      if (!ok) return false;
+    }
+    for (const { date, name } of holidays) {
+      byDate.set(date, { date, intervals: [], holidayName: name });
+    }
+    if (byDate.size > 500) {
+      setError('Cada horario admite hasta 500 excepciones. Seleccioná menos feriados.');
+      return false;
+    }
+    setError('');
+    update({ overrides: [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date)) });
+    setHolidaysAdded(true);
+    return true;
+  }
+
+  const today = DateTime.now().setZone(draft?.timezone || user.timezone).toISODate();
   const overrides = useMemo(() => (draft ? draft.overrides.filter((o) => o.date >= today) : []), [draft, today]);
 
   if (!draft) {
@@ -305,7 +350,7 @@ function ScheduleEditor() {
   }
 
   return (
-    <section>
+    <section inert={saving ? '' : undefined} aria-busy={saving}>
       <div className="page-header">
         <h1>Disponibilidad</h1>
         <div className="row">
@@ -389,7 +434,8 @@ function ScheduleEditor() {
               {overrides.map((o) => (
                 <li key={o.date} className="list-row static">
                   <span>
-                    <strong>{capitalize(DateTime.fromISO(o.date).setLocale(LOCALE).toFormat('ccc d LLL yyyy'))}</strong>
+                    <strong>{capitalize(DateTime.fromISO(o.date, { zone: draft.timezone }).setLocale(LOCALE).toFormat('ccc d LLL yyyy'))}</strong>
+                    {o.holidayName && <> · {o.holidayName}</>}
                     <br />
                     <span className="muted small">
                       {o.intervals.length === 0 ? 'No disponible' : o.intervals.map(([a, b]) => `${a}–${b}`).join(', ')}
@@ -419,16 +465,26 @@ function ScheduleEditor() {
               + Agregar excepción
             </button>
           )}
+          <ArgentinaHolidays
+            key={draft.id}
+            token={token}
+            timezone={draft.timezone}
+            overrides={draft.overrides}
+            canWrite={canWrite}
+            onApply={applyHolidays}
+            onExport={downloadHolidayCalendar}
+          />
         </section>
       </div>
 
-      {error && <p className="error-text">{error}</p>}
+      {error && <p className="error-text" role="alert">{error}</p>}
 
       {canWrite && (
         <div className="sticky-actions">
+          {holidaysAdded && <span className="muted small" role="status">Guardá el horario para bloquear los feriados.</span>}
           {saved && !dirty && <span className="success-text">Guardado ✓</span>}
-          <button type="button" className="btn-primary" disabled={!dirty} onClick={save}>
-            Guardar horario
+          <button type="button" className="btn-primary" disabled={!dirty || saving} onClick={save}>
+            {saving ? 'Guardando…' : 'Guardar horario'}
           </button>
         </div>
       )}
@@ -445,9 +501,10 @@ function ScheduleEditor() {
 }
 
 export default function Availability() {
+  const { companyId } = useAuth();
   return (
     <div className="page">
-      <ScheduleEditor />
+      <ScheduleEditor key={companyId} />
       <MeetingLimits />
     </div>
   );

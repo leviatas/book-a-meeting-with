@@ -129,6 +129,48 @@ test('agenda personal con una base SQLite temporal', async (t) => {
     assert.equal((await request(management + '/reschedule', { start: first })).status, 200);
   });
 
+  await t.test('un feriado bloquea las reuniones que caen en la fecha local del horario', async () => {
+    const timezone = 'America/Argentina/Buenos_Aires';
+    const holiday = monday.plus({ days: 3 }).setZone(timezone).startOf('day');
+    const iso = (time) => time.toUTC().toISO({ suppressMilliseconds: true });
+    const schedule = await prisma.schedule.create({ data: {
+      userId: host.id, companyId: company.id, name: 'Argentina', timezone,
+      weeklyJson: JSON.stringify({ 4: [['22:00', '22:30']], 5: [['22:00', '22:30']] }),
+      overridesJson: JSON.stringify([
+        { date: holiday.minus({ days: 1 }).toISODate(), intervals: [] },
+        { date: holiday.toISODate(), intervals: [], holidayName: 'Feriado de prueba' },
+      ]),
+    } });
+    const event = { ...base, scheduleId: schedule.id, durationMinutes: 30 };
+    const from = holiday.toUTC().toISODate();
+    const to = holiday.plus({ days: 2 }).toUTC().toISODate();
+    const range = '?from=' + from + '&to=' + to + '&timezone=UTC';
+    const holidaySlot = iso(holiday.plus({ hours: 22 }));
+    const nextSlot = iso(holiday.plus({ days: 1, hours: 22 }));
+    for (const kind of ['one_on_one', 'group']) {
+      const slug = 'feriado-' + kind;
+      await prisma.eventType.create({ data: { ...event, kind, seats: 2, slug, title: slug } });
+      const url = '/u/host/' + slug;
+      assert.deepEqual(Object.values((await request(url + '/slots' + range)).data.slots).flat(), [nextSlot]);
+      assert.equal((await request(url + '/book', { ...invitee, start: holidaySlot })).status, 409);
+    }
+
+    const endsAtMidnight = iso(holiday.minus({ minutes: 30 }));
+    const crossesMidnight = iso(holiday.minus({ minutes: 15 }));
+    const afterHoliday = iso(holiday.plus({ days: 1 }));
+    await prisma.eventType.create({ data: {
+      ...event, kind: 'one_off', title: 'Única en un feriado', slug: 'unica-feriado',
+      oneOffSlotsJson: JSON.stringify([endsAtMidnight, crossesMidnight, holidaySlot, afterHoliday]),
+    } });
+    const url = '/u/host/unica-feriado';
+    const offered = await request(url + '/slots' + range);
+    assert.deepEqual(Object.values(offered.data.slots).flat(), [endsAtMidnight, afterHoliday]);
+    assert.equal((await request(url + '/book', { ...invitee, start: crossesMidnight })).status, 409);
+    const booked = await request(url + '/book', { ...invitee, start: endsAtMidnight });
+    assert.equal(booked.status, 201);
+    assert.equal((await request('/bookings/' + booked.data.uid + '/reschedule', { start: holidaySlot })).status, 409);
+  });
+
   await t.test('el tope diario personal usa la misma zona para todos los horarios', async () => {
     await prisma.user.update({ where: { id: host.id }, data: { limitDay: 1, timezone: 'America/Argentina/Buenos_Aires' } });
     const midnight = monday.plus({ days: 1 }).startOf('day');
